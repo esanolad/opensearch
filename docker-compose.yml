@@ -1,0 +1,134 @@
+services:
+  traefik:
+    image: traefik:v2.10
+    container_name: traefik
+    restart: always
+    command:
+      - "--api.dashboard=true"
+      - "--providers.docker=true"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.mytlschallenge.acme.httpchallenge=true"
+      - "--certificatesresolvers.mytlschallenge.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.mytlschallenge.acme.email=info@example.com"
+      - "--certificatesresolvers.mytlschallenge.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "traefik-certificates:/letsencrypt"
+    networks:
+      - proxy
+
+  opensearch-node1:
+    restart: always
+    image: opensearchproject/opensearch:2.19.1
+    container_name: opensearch-node1
+    environment:
+      OPENSEARCH_JAVA_OPTS: "-Xms1024m -Xmx1024m" # minimum and maximum Java heap size, recommend setting both to 50% of system RAM
+      node.name: opensearch-node1
+      discovery.seed_hosts: opensearch-node1,opensearch-node2
+      cluster.initial_master_nodes: opensearch-node1,opensearch-node2
+      plugins.security.ssl.transport.pemkey_filepath: certificates/opensearch-node1/opensearch-node1.key # relative path
+      plugins.security.ssl.transport.pemcert_filepath: certificates/opensearch-node1/opensearch-node1.pem
+      plugins.security.ssl.http.pemkey_filepath: certificates/opensearch-node1/opensearch-node1.key
+      plugins.security.ssl.http.pemcert_filepath: certificates/opensearch-node1/opensearch-node1.pem
+      #DISABLE_INSTALL_DEMO_CONFIG: "true"
+      JAVA_HOME: /usr/share/opensearch/jdk
+      bootstrap.memory_lock: "true" # along with the memlock settings below, disables swapping
+      network.host: "0.0.0.0"
+    ulimits: 
+      memlock:
+        soft: -1
+        hard: -1
+    networks:
+      - proxy
+    volumes:
+      - "./opensearch.yml:/usr/share/opensearch/config/opensearch.yml"
+      - "opensearch-data1:/usr/share/opensearch/data"
+      - "./certs:/usr/share/opensearch/config/certificates:ro"
+      - "./opensearch.keystore:/usr/share/opensearch/config/opensearch.keystore"
+      - "./opensearch-security:/usr/share/opensearch/config/opensearch-security"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "1"
+    ports:
+      - 9200:9200
+      - 9600:9600 # required for Performance Analyzer
+  
+  opensearch-node2:
+    restart: always
+    image: opensearchproject/opensearch:2.19.1
+    container_name: opensearch-node2
+    environment: 
+      OPENSEARCH_JAVA_OPTS: "-Xms1024m -Xmx1024m" # minimum and maximum Java heap size, recommend setting both to 50% of system RAM
+      node.name: opensearch-node2
+      discovery.seed_hosts: opensearch-node1,opensearch-node2
+      cluster.initial_master_nodes: opensearch-node1,opensearch-node2
+      plugins.security.ssl.transport.pemkey_filepath: certificates/opensearch-node2/opensearch-node2.key # relative path
+      plugins.security.ssl.transport.pemcert_filepath: certificates/opensearch-node2/opensearch-node2.pem
+      plugins.security.ssl.http.pemkey_filepath: certificates/opensearch-node2/opensearch-node2.key
+      plugins.security.ssl.http.pemcert_filepath: certificates/opensearch-node2/opensearch-node2.pem
+      #DISABLE_INSTALL_DEMO_CONFIG: "true"
+      JAVA_HOME: /usr/share/opensearch/jdk
+      bootstrap.memory_lock: "true" # along with the memlock settings below, disables swapping
+      network.host: "0.0.0.0"
+    ulimits: 
+      memlock:
+        soft: -1
+        hard: -1
+    networks:
+      - proxy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "1"
+    volumes:
+      - "./opensearch.yml:/usr/share/opensearch/config/opensearch.yml"
+      - "opensearch-data2:/usr/share/opensearch/data"
+      - "./certs:/usr/share/opensearch/config/certificates:ro"
+      - "./opensearch.keystore:/usr/share/opensearch/config/opensearch.keystore"
+      - "./opensearch-security:/usr/share/opensearch/config/opensearch-security"
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:latest
+    container_name: opensearch-dashboards
+    environment:
+      OPENSEARCH_HOSTS: '["https://opensearch-node1:9200", "https://opensearch-node2:9200"]'
+      #DISABLE_SECURITY_DASHBOARDS_PLUGIN: true
+    ports:
+      - "5601:5601"
+    volumes:
+      - "./certs:/usr/share/opensearch-dashboards/config/certificates:ro"
+      - "./opensearch-dashboards.yml:/usr/share/opensearch-dashboards/config/opensearch_dashboards.yml"
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.dashboards.rule=Host(`dashboards.examole.com`)"
+      - "traefik.http.routers.dashboards.entrypoints=websecure"
+      - "traefik.http.routers.dashboards.tls=true"
+      - "traefik.http.routers.dashboards.tls.certresolver=mytlschallenge"
+      - "traefik.http.middlewares.dashboards.headers.STSSeconds=315360000"
+      - "traefik.http.middlewares.dashboards.headers.browserXSSFilter=true"
+      - "traefik.http.middlewares.dashboards.headers.contentTypeNosniff=true"
+      #- "traefik.http.services.dashboards.loadbalancer.server.scheme=https"
+      - "traefik.http.services.dashboards.loadbalancer.server.port=5601"
+      - "traefik.http.routers.dashboards.middlewares=dashboards@docker"
+
+  
+
+volumes:
+  traefik-certificates:
+  opensearch-data1:
+  opensearch-data2:
+
+
+networks:
+  proxy:
+    external: true
+    driver: bridge
